@@ -6,7 +6,7 @@ Unified customer success portal for Katyayani Organics. Consolidates all custome
 ### Channels
 | Channel | Platform | Status |
 |---------|----------|--------|
-| Email | Gmail (API + Pub/Sub) | Built (GCP setup pending) |
+| Email | Gmail (IMAP + SMTP) | Active — inbound polling + outbound reply |
 | Chat | Interakt (WhatsApp) | Built |
 | Chat | Netcore (WhatsApp) | Built |
 | Calls | IVR | Frontend wired to Supabase (real-time) |
@@ -42,7 +42,7 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 
 ## Key Modules (Built — Backend)
 - `supabase/` — Global Supabase client (service_role key)
-- `gmailIngestion/` — Gmail API wrapper, CRUD for support emails, webhook handler, cron for watch renewal, AI summarization
+- `gmailIngestion/` — IMAP polling, SMTP reply (nodemailer), CRUD for support emails, AI summarization
 - `emailGateway/` — WebSocket gateway (Socket.io, namespace `/emails`)
 - `chatIngestion/` — Multi-provider WhatsApp ingestion:
   - `chatWebhook.controller.ts` — POST /webhooks/interakt, POST /webhooks/netcore (fire-and-forget pattern)
@@ -55,7 +55,7 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 ## Key Modules (Built — Frontend)
 - `src/hooks/useLiveChat.ts` — Conversations + messages from Supabase, send reply via backend, real-time
 - `src/hooks/useChatCounts.ts` — Sidebar badge counts from conversations table, real-time
-- `src/hooks/useEmails.ts` — Email listing with AI summaries
+- `src/hooks/useEmails.ts` — Email listing, thread grouping, send reply, AI summaries, real-time
 - `src/hooks/useQueryAssignments.ts` — CRUD + bulk assign
 - `src/hooks/useAgentCalls.ts`, `useAgentChats.ts`, `useAgentHangups.ts`, `useAgentSLABreach.ts`, `useAgentCompleted.ts`
 - `src/hooks/useIVRCalls.ts` — Unified hook for all 7 IVR pages (filters, mutations, real-time)
@@ -66,7 +66,7 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 
 ## Supabase Tables
 - `support_emails` — monitored Gmail accounts
-- `emails` — with `summary` + `suggested_team` (AI-generated)
+- `emails` — inbound + outbound, with `direction`, `agent_name`, `in_reply_to`, `summary`, `suggested_team`
 - `conversations` — `channel` (interakt|netcore), `phone_number`, `customer_name`, `status`, `assigned_agent`, `assigned_team`, `unread_count`
 - `chat_messages` — `conversation_id`, `direction`, `content`, `message_type`, `media_url`, `external_message_id`, `summary`, `suggested_team`
 - `chat_templates` — canned responses for chat
@@ -87,6 +87,7 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 | DELETE | `/support-emails/:id` | Remove + stop watch |
 | GET | `/emails` | List emails (paginated) |
 | GET | `/emails/:id` | Full email details |
+| POST | `/emails/:id/reply` | Send SMTP reply (CC/BCC supported) |
 | POST | `/webhooks/gmail` | Pub/Sub push endpoint |
 | POST | `/webhooks/interakt` | Interakt WhatsApp webhook |
 | POST | `/webhooks/netcore` | Netcore WhatsApp webhook |

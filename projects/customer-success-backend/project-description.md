@@ -7,9 +7,9 @@ Unified customer success portal for Katyayani Organics. Consolidates all custome
 | Channel | Platform | Status |
 |---------|----------|--------|
 | Email | Gmail (IMAP + SMTP) | Active — inbound polling + outbound reply |
-| Chat | Interakt (WhatsApp) | Built |
+| Chat | Interakt (WhatsApp) | Built — dynamic multi-provider via `interact_providers` table |
 | Chat | Netcore (WhatsApp) | Built |
-| Calls | IVR | Frontend wired to Supabase (real-time) |
+| Calls | IVR | Frontend wired to Supabase (real-time), dynamic providers |
 
 ### Core Features
 - **Omnichannel inbox** — emails, chats, calls in one view
@@ -34,9 +34,10 @@ Unified customer success portal for Katyayani Organics. Consolidates all custome
 
 ## Architecture
 ```
-Gmail    → Gmail API watch() → Pub/Sub → POST /webhooks/gmail    → AI classify → Supabase → WebSocket
-Interakt → POST /webhooks/interakt                               → AI classify → Supabase → WebSocket
-Netcore  → POST /webhooks/netcore                                → AI classify → Supabase → WebSocket
+Gmail    → Gmail API watch() → Pub/Sub → POST /webhooks/gmail              → AI classify → Supabase → WebSocket
+Interakt → POST /webhooks/interakt (legacy)                                → AI classify → Supabase → WebSocket
+         → POST /webhooks/interact/:slug (dynamic, API key auth)           → AI classify → Supabase → WebSocket
+Netcore  → POST /webhooks/netcore                                          → AI classify → Supabase → WebSocket
 Frontend → Supabase JS client (anon key) + postgres_changes real-time subscriptions
 ```
 
@@ -44,13 +45,15 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 - `supabase/` — Global Supabase client (service_role key)
 - `gmailIngestion/` — IMAP polling, SMTP reply (nodemailer), CRUD for support emails, AI summarization
 - `emailGateway/` — WebSocket gateway (Socket.io, namespace `/emails`)
+- `notifications/` — Notifications + approval requests + preferences. Service exports for cross-module use (e.g. ivrWebhooks creating missed call notifications)
 - `chatIngestion/` — Multi-provider WhatsApp ingestion:
-  - `chatWebhook.controller.ts` — POST /webhooks/interakt, POST /webhooks/netcore (fire-and-forget pattern)
-  - `chatIngestion.service.ts` — Shared ingest pipeline: dedup, conversation mgmt, AI classify, WebSocket emit
+  - `chatWebhook.controller.ts` — POST /webhooks/interakt (legacy), POST /webhooks/interact/:slug (dynamic, API key auth), POST /webhooks/netcore (fire-and-forget pattern)
+  - `chatIngestion.service.ts` — Shared ingest pipeline: dedup, conversation mgmt (scoped by channel), AI classify, WebSocket emit. `process_interact_webhook()` validates provider + API key.
   - `interakt.service.ts` — Interakt outbound API
   - `netcore.service.ts` — Netcore outbound API (Bearer auth)
   - `chatGateway.ts` — WebSocket gateway (namespace `/chats`)
   - Channel routing: `conversations.channel` determines which provider for outbound replies
+  - Dynamic providers: `interact_providers` table — slug, name, api_key, channel_phone_number, is_active
 
 ## Key Modules (Built — Frontend)
 - `src/hooks/useLiveChat.ts` — Conversations + messages from Supabase, send reply via backend, real-time
@@ -60,14 +63,18 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 - `src/hooks/useAgentCalls.ts`, `useAgentChats.ts`, `useAgentHangups.ts`, `useAgentSLABreach.ts`, `useAgentCompleted.ts`
 - `src/hooks/useIVRCalls.ts` — Unified hook for all 7 IVR pages (filters, mutations, real-time)
 - `src/hooks/useIVRSidebarCounts.ts` — IVR sidebar badge counts (live/hangup per dept, SLA breach)
+- `src/hooks/useNotifications.ts` — Notifications + approval requests, mutations via backend API, realtime on both tables, computed stats (slaCount, missedCallCount, pendingApprovals)
 - `src/pages/LiveChat.tsx` — Wired to Supabase (conversations, messages, channel filtering, real-time)
 - `src/pages/IVRLiveDepartment.tsx`, `IVRLive.tsx`, `IVRHangup.tsx`, `IVRHangupDepartment.tsx`, `IVRConsolidated.tsx`, `CallHistory.tsx`, `SLABreach.tsx` — All wired to Supabase via `useIVRCalls`
-- `src/components/layout/AppSidebar.tsx` — Live Chat + IVR Live + IVR Hangup + SLA Breach badges from Supabase
+- `src/pages/Notifications.tsx` — Wired to Supabase (5 tabs, search, approve/reject, inline actions, realtime)
+- `src/components/layout/AppHeader.tsx` — Bell icon badge + dropdown from `useNotifications`
+- `src/components/layout/AppSidebar.tsx` — Live Chat + IVR Live + IVR Hangup + SLA Breach + Notifications badges from Supabase
 
 ## Supabase Tables
 - `support_emails` — monitored Gmail accounts
 - `emails` — inbound + outbound, with `direction`, `agent_name`, `in_reply_to`, `summary`, `suggested_team`
-- `conversations` — `channel` (interakt|netcore), `phone_number`, `customer_name`, `status`, `assigned_agent`, `assigned_team`, `unread_count`
+- `conversations` — `channel` (dynamic slug from interact_providers, or 'netcore'), `phone_number`, `customer_name`, `status`, `assigned_agent`, `assigned_team`, `unread_count`. UNIQUE on `(phone_number, channel)` — same customer can have separate conversations per provider.
+- `interact_providers` — dynamic WhatsApp channel providers (slug, name, api_key, channel_phone_number, icon, display_order, is_active). Same pattern as `ivr_providers`.
 - `chat_messages` — `conversation_id`, `direction`, `content`, `message_type`, `media_url`, `external_message_id`, `summary`, `suggested_team`
 - `chat_templates` — canned responses for chat
 - `agents` — support agents with status, department, skills
@@ -77,6 +84,9 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 - `audits`, `refund_requests`, `refund_request_products`, `refund_request_actions`
 - `video_call_leads`, `customer_timeline`, `sla_configurations`
 - `roles`, `modules`, `module_role_access`, `user_role_access`
+- `notifications` — main notification store (type, priority, status, approval fields, realtime enabled)
+- `approval_requests` — linked to notifications via `notification_id` FK (realtime enabled)
+- `notification_preferences` — per-user settings (user_id+name, email/sms/push booleans)
 
 ## API Endpoints
 | Method | Path | Description |
@@ -89,7 +99,8 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 | GET | `/emails/:id` | Full email details |
 | POST | `/emails/:id/reply` | Send SMTP reply (CC/BCC supported) |
 | POST | `/webhooks/gmail` | Pub/Sub push endpoint |
-| POST | `/webhooks/interakt` | Interakt WhatsApp webhook |
+| POST | `/webhooks/interakt` | Interakt WhatsApp webhook (legacy) |
+| POST | `/webhooks/interact/:slug` | Dynamic Interact provider webhook (API key auth via x-api-key header) |
 | POST | `/webhooks/netcore` | Netcore WhatsApp webhook |
 | POST | `/conversations/:id/reply` | Send reply (routes to correct provider) |
 | GET | `/chat-templates` | List templates |
@@ -100,6 +111,16 @@ Frontend → Supabase JS client (anon key) + postgres_changes real-time subscrip
 | POST | `/query-assignments` | Create assignment |
 | PATCH | `/query-assignments/:id` | Update assignment |
 | POST | `/query-assignments/bulk-assign` | Bulk assign |
+| POST | `/notifications` | Create notification (optionally auto-creates approval_request) |
+| GET | `/notifications` | List with filters (type, status, priority, to_user, search, page, limit) |
+| GET | `/notifications/unread-count/:user_id` | Badge count |
+| PATCH | `/notifications/mark-all-read` | Bulk mark all unread → read |
+| PATCH | `/notifications/:id` | Mark single read/actioned/dismissed |
+| GET | `/notifications/approval-requests` | List approval requests |
+| POST | `/notifications/approval-requests/:id/approve` | Approve request |
+| POST | `/notifications/approval-requests/:id/reject` | Reject request |
+| GET | `/notifications/preferences/:user_id` | Get preferences (auto-seeds 6 defaults) |
+| PUT | `/notifications/preferences/:user_id` | Upsert preferences |
 
 ## Swagger
 `http://localhost:3002/api/docs`

@@ -70,8 +70,11 @@ Wired all 7 IVR pages from hardcoded mock data (`src/data/ivrData.ts`) to live S
 
 ## What Stays Mock
 - `mockCustomer`, `mockOrders`, `mockInteractions`, `solutionScripts` in IVRLive.tsx (no customers/orders tables yet)
-- `DEPARTMENT_LABELS`, `DEPARTMENT_CATEGORIES` from ivrData.ts (static config)
 - Agent hooks (`useAgentCalls`, `useAgentHangups`, etc.) — separate, serve Agent Dashboard
+
+## Superseded
+- `DEPARTMENT_LABELS`, `DEPARTMENT_CATEGORIES`, `IVRDepartment` union type — all replaced by dynamic system. See `dynamic-ivr-providers.md`
+- `useIVRSidebarCounts` rewritten with dynamic `Record<string, number>` instead of fixed dept properties
 
 ## DB Notes
 - `ivr_calls` table has 30+ columns, `agent_id` is UUID type (not string IDs like 'ag-1')

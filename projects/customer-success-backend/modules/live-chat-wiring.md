@@ -56,3 +56,11 @@ Wired the LiveChat page from mock/hardcoded data to real Supabase data, fixed ch
 ## DB State
 - 6 conversations: 4 interakt + 2 netcore (test data from webhook curls)
 - 9 chat_messages across those conversations
+
+## Update: Dynamic Interact Providers (2026-02-24)
+Live Chat channels are now dynamic via `interact_providers` table. See `dynamic-interact-providers.md` for full details.
+- `POST /webhooks/interact/:slug` — dynamic endpoint with API key auth
+- `conversations` unique constraint changed: `UNIQUE(phone_number)` → `UNIQUE(phone_number, channel)`
+- Same phone via different providers → separate conversations
+- Old `/webhooks/interakt` still works (backward compat)
+- Frontend: sidebar, tabs, counts need to be dynamified (tasks in `~/Desktop/frontend-tasks.md`)

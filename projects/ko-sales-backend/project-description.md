@@ -59,6 +59,34 @@ src/
     ├── cohorts/         # Rule-based segmentation + bulk assignment (BullMQ)
     │   ├── services/cohort-assignment.service.ts   # capacity-weighted distribution
     │   └── processors/cohort-assignment.processor.ts  # BullMQ worker
+    ├── bulks/           # BulkV2 CRUD — product catalog management (7 endpoints)
+    ├── associate/       # B2B catalog visibility, rule engine, pricing, packaging requests
+    │   ├── services/visibility-rule-engine.service.ts  # json-rules-engine + field-priority scoring
+    │   ├── services/pricing-rule-engine.service.ts     # pricing tier evaluation
+    │   └── schemas/packaging-request.schema.ts         # custom packaging with per-SKU approval
+    ├── associates/      # Partner onboarding, CRUD, admin management, profile
+    │   ├── associates.service.ts          # full CRUD, search, filtering, pagination
+    │   ├── admin-associates.controller.ts # admin management, stats, approval
+    │   ├── profile.controller.ts          # mobile profile endpoint
+    │   └── services/associate-aggregate.service.ts # merges Associate+PII+Address
+    ├── associate-events/ # Event stream (RFQ, login, cart, etc.) — powers APS
+    ├── associate-features/ # APS scoring engine (priority-based sales routing)
+    │   ├── aps-scoring.service.ts    # intent 40%, engagement 25%, timing 20%, cost 15%
+    │   └── window-recovery.job.ts    # periodic recalculation
+    ├── onboarding-config/  # Dynamic form schema with multilingual support (en/hi)
+    ├── onboarding-progress/ # Step-by-step onboarding journey tracking
+    ├── agreements/      # Partner T&Cs and contract documents
+    ├── products/        # Product catalog (SKU, filters, featured, new)
+    ├── cart/            # Shopping cart management
+    ├── schemes/         # Promotional campaign rule engine
+    │   ├── services/rule-engine.service.ts        # core evaluation pipeline
+    │   ├── services/targeting-matcher.service.ts   # user/product matching
+    │   ├── services/condition-evaluator.service.ts # AND/OR condition logic
+    │   └── services/action-executor.service.ts     # benefit calculation
+    ├── tiers/           # Partner tier system (bronze/silver/gold/diamond)
+    ├── wallet/          # Coin wallet + transaction ledger
+    ├── payment/         # Juspay/HDFC payment gateway (service-only, no controller)
+    ├── tickets/         # Support tickets with file uploads + comments
     └── seed/            # Sample data seeding (POST /seed)
 ```
 
@@ -97,6 +125,8 @@ src/
 | TaskWorkflow | TW-N | TW-1 |
 | Signal | SIG-XXXXX | SIG-00001 |
 | CohortAssignmentJob | CAJ-N | CAJ-1 |
+| Associate | KAS-XXXXXX | KAS-000001 |
+| FavouriteProduct | associate_id+sku (compound unique) | — |
 
 ## Role Codes
 | Code | Role |
@@ -107,6 +137,7 @@ src/
 | USR-1003 | Team Manager |
 | USR-1004 | Floor Manager |
 | USR-1005 | Agro |
+| USR-1019 | Floor Manager (FM role, added by mayank-dev) |
 
 Admin roles (full data visibility): USR-1000, USR-1001, USR-1004, USR-1005
 `is_admin_role()` in `src/common/utils/roles.util.ts`
@@ -126,6 +157,8 @@ Disposition enum: `follow_up, push_to_advisory, order_placed, lead_closed, prosp
 `deal_id`, `pii_id`, `contact_id`, `lead_id`, `agent_category`, `agent_id`, `pipeline_id`, `status(open/won/lost/closed/order_created)`, `probability`, `validity_days`, `estimated_closure_date`, `actual_closure_date`, `quotation[]`, `notes[]`, `updated_data[]`
 
 Quotation embedded: `quotation_id`, `expiry_date`, `line_item[]`, `status(draft/shared/rejected/accepted/expired)`, `payment_type`, `total_amount`, `prepaid_amount`, `cod_amount`, `channel`
+
+LineItem embedded: `item`, `qty`, `case_qty`, `single_item_price`, `sku`, `gst`, `total_amount`, `item_type`, `requested_weight`(Number), `packaging_size`(Number), `uom`(String: kg/l/pc), `packaging_type`(String: hdpe bottle/pouch)
 
 ### PII (`piis` collection)
 `pii_id`, `phone_number[]` (unique index), `email`, `country_code`, `addresses[{label,line1,line2,city,state,pincode,country}]`, `gst_numbers[{gst_number,business_name,status,registration_date}]`, `documents{pan:{id,image}, adhar:{id,image}, pc:{id,image}}`
@@ -148,6 +181,16 @@ Unique index: `{pipeline_type, agent_category}`
 
 ### LeadPipeline (`lead_pipelines` collection)
 `pipeline_id`, `workflow_id`, `pii_id`, `lead_id`, `agent_id`, `agent_category`, `current_stage`, `stage_history[{stage,entered_at,exited_at,moved_by}]`, `status(active/closed/completed)`, `closed_reason(owner_changed/lead_lost/completed/null)`
+
+### BulkV2 (`bulk_v2` collection — in KO-Database)
+`sku` (String, NOT bulk_sku), `trade_name`, `technical_name`, `category` (String, NOT ObjectId), `sub_category` (String), `channels{website,distributor,retailer}`, `description{english,hindi}`, `gst_rate` (String), `hsn_code`, `bulk_min_order_qty` (String), `dist_min_order_qty` (String), `technicals[{technical_sku,technical_name,value,unit}]`, `crops[]`, `diseases[]`, `dosage[]`, `features[]`, `applications[]`, `bulk_type`, `uom`, `sku_type`
+
+### PackagingRequest (`packaging_requests` collection)
+`pii_id`, `status(pending/partially_approved/approved/rejected)`, `items[{sku,packaging_size,price,moq,status(pending/approved/rejected),rejection_reason,reviewed_by}]`, `remarks`, `created_by`, `updated_by`, `created_at`, `updated_at`
+Parent status auto-derives from item statuses.
+
+### AssociateRule (`associate_partner_rules` collection)
+`rule_name`(unique), `type(category/bulk/moq/cluster/recommended/popular)`, `conditions`(json-rules-engine), `event`(Mixed), `categories[]`, `sku`, `bulks[]`, `pricing[{moq,price}]`, `packaging[{type,size}]`(bulk rules only), `cluster_name`, `is_active`, `considered_as_log`, `version`, `priority`, `comment`
 
 ## Architecture Decisions
 1. **PII = privacy layer** — all sensitive data (phone, email, docs) in PII. Lead/Contact reference by `pii_id` string (NOT ObjectId → no `.populate()`, manual joins)
@@ -175,6 +218,14 @@ Pipelines ──► Tasks (stage creation/transition triggers task workflow)
 Tasks ──► Notes (complete with note creates linked Note + task_id)
 Dashboard ──► Lead, Deal, Task, Signal, Contact (aggregation only)
 Cohorts ──► Leads (bulk assignment via BullMQ, capacity-weighted)
+Associate (old) ──► PII, BulkV2, PackagingRequests
+Associates (new) ──► PII, Counter, Contacts (enriched via AggregateService)
+AssociateEvents ──► AssociateFeatures (APS engine, event-driven scoring)
+OnboardingConfig ──► OnboardingProgress (schema reference)
+Schemes ──► Associates (targeting by tier/state/segment)
+Wallet ◄── Payment (Juspay top-up funding)
+Tickets ──► Associates (user lookup)
+Tiers ──► Associates (tier progression)
 ```
 
 ## Env Variables
@@ -196,6 +247,72 @@ SUPABASE_KEY=         # optional
 REDIS_HOST=127.0.0.1  # BullMQ
 REDIS_PORT=6379
 ```
+
+## Customer Success Module (merged 2026-02-28)
+
+Entire customer-success-backend merged as an isolated module under `src/modules/customer-success/`.
+169 files, 26 sub-modules, 160+ endpoints — all under `/api/v1/cs/*` routes.
+
+### Key Adaptations
+- **Routes**: All controllers prefixed with `cs/` (e.g. `@Controller('cs/agents')`)
+- **Swagger**: All `@ApiTags` prefixed with `cs/` (e.g. `@ApiTags('cs/tickets')`)
+- **Auth**: All controllers marked `@Public()` — bypasses ko-sales JWT guard
+- **Supabase**: `SupabaseService` renamed to `CsSupabaseService` to avoid DI conflict
+- **Env vars**: `CS_SUPABASE_URL` + `CS_SUPABASE_SERVICE_ROLE_KEY` (separate Supabase project: `gusenrddxwuwrclzfkur`)
+- **Import extensions**: Stripped `.js` extensions (ko-sales uses CommonJS, CS used NodeNext)
+- **Wrapper**: `CustomerSuccessModule` imports all 26 sub-modules, registered in `app.module.ts`
+
+### CS Sub-Modules (under src/modules/customer-success/)
+| Module | Route Prefix | Purpose |
+|--------|-------------|---------|
+| supabase | — | CsSupabaseService (Supabase client) |
+| gmailIngestion | cs/support-emails, cs/emails | IMAP email polling + AI summarization |
+| emailGateway | — | WebSocket for real-time email updates |
+| chatIngestion | cs/conversations, cs/messages, cs/webhooks | WhatsApp (Interakt/Netcore) |
+| chatTemplates | cs/chat-templates | Canned responses |
+| adminDashboard | cs/admin/dashboard | Analytics dashboard |
+| agents | cs/agents | Agent management + role hierarchy |
+| roles | cs/roles | Role and module access |
+| notifications | cs/notifications | Notifications + approval requests |
+| queryAssignments | cs/query-assignments | Query dispatch to agents |
+| ivrWebhooks | cs/webhooks/ivr | IVR call data ingestion |
+| kaleyraVoice | cs/* | Kaleyra voice API + CDR webhook |
+| slaConfig | cs/sla-config | SLA configuration |
+| tickets | cs/tickets, cs/ticket-* | Ticket system (CRUD, categories, templates, routing) |
+| surveys | cs/survey-* | Survey templates, campaigns, calls |
+| refunds | cs/refunds | Refund management |
+| audits | cs/audits | Audit logging |
+| workflows | cs/workflows | Workflow automation |
+| videoCallLeads | cs/video-call-leads | Video call leads |
+| callCategories | cs/call-categories | Call categorization |
+| youtubeLeads | cs/youtube-leads | YouTube leads |
+| customerFeedback | cs/customer-feedback | Customer feedback |
+| customerTimeline | cs/customer-timeline | Customer activity timeline |
+| agentFeedback | cs/agent-feedback | Agent performance feedback |
+| returnRca | cs/return-rca | Return root cause analysis |
+| agriConsultancy | cs/agri-consultancy | Agricultural consultancy |
+
+### CS Env Variables (added to .env)
+```
+CS_SUPABASE_URL=https://gusenrddxwuwrclzfkur.supabase.co
+CS_SUPABASE_SERVICE_ROLE_KEY=...
+ENCRYPTION_KEY=...          # AES-256 for IMAP passwords
+GEMINI_API_KEY=             # Google Gemini for email AI
+KALEYRA_API_KEY=...         # Kaleyra voice
+KALEYRA_CALLBACK_URL=http://localhost:3000/api/v1/cs/webhooks/kaleyra/callback
+KALEYRA_SYNC_INTERVAL_MINUTES=10
+NETCORE_API_URL=            # Netcore WhatsApp
+NETCORE_API_KEY=
+```
+
+## Last Worked
+
+| Date | What |
+|------|------|
+| 2026-03-06 | BulkV2 CRUD module (7 endpoints), fixed app.module.ts duplicate imports, fixed agents.service.ts duplicate method, installed @aws-sdk/client-s3 |
+| 2026-03-05 | Cohort system tested in depth (28/30 passing), 2 bugs fixed (operator validation + BSON overflow) |
+| 2026-02-28 | Quotation LineItem schema extended, mayank-dev merged (13 modules), CS module merged |
+| 2026-02-21 | Customer module + Cohort system + BullMQ assignment |
 
 ## Context Files in Project
 - `.claude/context-memory.md` — compressed module/route/schema memory (maintained by Claude)

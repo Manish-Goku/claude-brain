@@ -41,7 +41,7 @@ auth/                            # JWT auth, signup, role assign/unassign, modul
 dashboard/                       # Order summary, pending, NDR, escalated, failed, tracking, invoice download
 leads_operation/                 # Analytics, batches, clusters, workflows, assignment
 leads_management/                # Lead request approval flow
-Inventory/                       # SKU inventory (warehouse: 674872800a3c153036bc00f0)
+Inventory/                       # Komal API proxy (warehouse inventory, native filters, stats counts)
 agronomy/                        # Call audits (14 params, server-side search, stats API), tests (MCQ auto-eval), question bank, suggestions, skill matrix (aggregation pipeline), principal certs (S3 uploads), products, FCM notifications
 sop/                             # SOP CRUD (Firebase Storage attachments, versioning)
 Reports_and_Analytics/           # Manager/agent revenue, performance, attendance
@@ -137,6 +137,16 @@ Full documentation at `~/Desktop/dev-wiki/sales-operation/` — architecture, AP
 - `customer_id` in calls = lead ID (K0-xxx) — NOT an ObjectId
 - `agent_id` in calls = agent email — NOT agentId (A0-xxx)
 - `outcome` values: "Connected" or "connected" (both exist, filter with `$in`)
+
+## Inventory Module (Komal API)
+- **Data source**: Komal warehouse management API (`api.komal.ko-tech.in`) — NOT MongoDB
+- **Auth**: OAuth2 password grant → Bearer token (9h cache). Credentials in `.env` (`KOMAL_BASE_URL`, `KOMAL_USERNAME`, `KOMAL_PASSWORD`, `KOMAL_DEFAULT_STORE`)
+- **Komal endpoint**: `GET /inventory/{store_name}` — params: `page`, `page_size`, `status` (negative/low/high), `filters` (JSON array)
+- **Native filters**: `[{"field":"category","filters":[{"operator":"contains","operator_value":null,"value":"FG"}]}]` — works for category, name, sku. Multiple filters AND-ed. No server-side caching needed.
+- **Backend endpoints**: `GET /inventory/inventory` (listing), `GET /inventory/stats` (3 calls to Komal for out_of_stock/low_stock/available counts), `GET /inventory/stores` (7 warehouses)
+- **Status mapping**: negative→out_of_stock, low→low_stock, high→available
+- **Stores**: Gilehri Warehouse (~3931 items, default), Katyayani Organics (~1629), Gilehri B, Gilehri International, Gilehri W3, Gilehri W4, Gilehri Workstation 2
+- **Frontend**: `OutOfStock.tsx` — store selector, status/category/search filters (all server-side), stats cards via `useInventoryStats`, table via `useInventory`. ~1s per request.
 
 ## Default Date Ranges
 - **Call Audits**: 30 days (applied on mount via preset)
